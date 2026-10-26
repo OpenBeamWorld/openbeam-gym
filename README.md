@@ -44,6 +44,22 @@ format is needed. Any vehicle mod with an `openbeam_robot.json`
 (`openbeam-robot/1`) works the same way: set `SceneConfig(robot_file=...,
 install_url=..., install_sha256=...)`.
 
+`assets/openbeam_humanoid_g1.zip` is a G1-class humanoid (25 joints, fixed
+base on a pedestal) for pose tracking; `humanoid_g1_scene()` sets it up and
+`openbeam_gym.retarget.Retargeter` turns MediaPipe BlazePose world landmarks
+into its joint targets (smoothed, rate limited, within the limits):
+
+```python
+from openbeam_gym.env import humanoid_g1_scene
+from openbeam_gym.retarget import Retargeter
+
+rt = Retargeter()
+targets = rt.update(pose_world_landmarks, t=timestamp)   # {joint: radians}
+command = rt.lua_command()   # one vehicle-Lua call that sets all 25 joints
+```
+
+See `assets/README.md` for both robots.
+
 No game at hand? `openbeam_gym.fake.FakeGame` is an in-process stand-in with
 the same tool surface (a rigid kinematic arm), for tests and dry runs:
 
