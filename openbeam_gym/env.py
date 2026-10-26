@@ -30,6 +30,12 @@ TEST_ARM_FILE = "openbeam_test_arm.jbeam"
 TEST_ARM_URL = "https://raw.githubusercontent.com/OpenBeam-OSS/openbeam-gym/main/assets/openbeam_test_arm.zip"
 TEST_ARM_SHA256 = "1464f6b06318edb3c3abfc4385fa1690fbffe582c143729d67cc314d12e892a9"
 
+# The overhead camera boom for top-down teleoperation (assets/openbeam_camera_boom.zip,
+# built by openbeam_gym/robots/build_camera_boom.py), installed the same way.
+CAMERA_BOOM_FILE = "openbeam_camera_boom.jbeam"
+CAMERA_BOOM_URL = "https://raw.githubusercontent.com/OpenBeam-OSS/openbeam-gym/main/assets/openbeam_camera_boom.zip"
+CAMERA_BOOM_SHA256 = "13cae13e8552844600484df4b49157332e545a60b9db2b7f6e040b0299a67c3b"
+
 
 def quat_xyzw_to_matrix(q) -> np.ndarray:
     x, y, z, w = q
