@@ -34,7 +34,8 @@ Construction, as the test arm (``build_test_arm.py``):
   rests on the ground lightly. ``build(stand=False)`` leaves the pedestal and
   the ballast out: a free-standing body that needs a balance controller.
 
-Fixed-step sizing (0.5 ms). The game holds every node to the explicit
+Fixed-step sizing (0.5 ms; the shared law and solvers are in ``sizing.py``).
+The game holds every node to the explicit
 criterion ``omega^2 h^2 + 2 c h / m <= 4``: it lowers beams to a 2.6 share and
 scales the torsion bars on a node to a 0.8 share (per bar
 ``(h^2 k + 2 h c) |g_i| sum_j |g_j| / m_i``, g the gradient of the bar's
@@ -73,15 +74,17 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
 
 from . import humanoid_g1
 from .build_test_arm import write_zip
+from .sizing import (add, cross, dot, gravity_torque_bound, inertia_about, joint_need, mul, size_beams,
+                     size_torsion, sub, unit)
+from .sizing import dihedral_gradient  # noqa: F401  (re-exported: the bars' angle gradient)
+from .sizing import dynamics as joint_dynamics
+from .sizing import node_loads as _node_loads
 
 NAME = "openbeam_humanoid_g1"
-H = 0.0005                 # s, the game's fixed physics step
-GRAVITY = 9.81
 STAND = True               # v1: fixed base on a pedestal
 STAND_MASS = 150.0         # kg, the pedestal, including the pelvis ballast
 PELVIS_BALLAST = 30.0      # kg of the pedestal carried on the (mounted) pelvis nodes
@@ -107,46 +110,9 @@ RING_WEIGHT = 3.0
 AXIS_WEIGHT = 1.5
 
 
-def sub(a, b):
-    return tuple(x - y for x, y in zip(a, b))
-
-
-def add(*vs):
-    return tuple(sum(c) for c in zip(*vs))
-
-
-def mul(v, s):
-    return tuple(c * s for c in v)
-
-
-def dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
-
-
-def cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
-def norm(a):
-    return math.sqrt(dot(a, a))
-
-
-def unit(a):
-    n = norm(a)
-    return tuple(c / n for c in a)
-
-
 def to_jbeam(p):
     """Base frame (x forward, y left, z up) -> JBeam (x left, y back, z up)."""
     return (round(p[1], 5), round(-p[0], 5), round(p[2], 5))
-
-
-def sig_floor(x: float, digits: int = 3) -> float:
-    """x rounded down to `digits` significant digits (stays inside a budget)."""
-    if x <= 0:
-        return 0.0
-    e = math.floor(math.log10(x)) - digits + 1
-    return round(math.floor(x / 10 ** e + 1e-9) * 10 ** e, max(0, -e))
 
 
 class Robot:
@@ -253,37 +219,6 @@ def geometry(stand: bool = STAND) -> Robot:
     return r
 
 
-# -- torsion bar geometry (the engine's angle gradient) ---------------------------
-
-def dihedral_gradient(p1, p2, p3, p4):
-    """Gradient of the dihedral angle of lever p1 and lever p4 about p2 -> p3
-    with respect to each node (Blondel and Karplus); they sum to zero."""
-    f, g, h = sub(p1, p2), sub(p2, p3), sub(p4, p3)
-    a, b = cross(f, g), cross(h, g)
-    aa, bb, gl = dot(a, a), dot(b, b), norm(g)
-    fg, hg = dot(f, g), dot(h, g)
-    g1 = mul(a, -gl / aa)
-    g4 = mul(b, gl / bb)
-    g2 = add(mul(a, gl / aa), mul(a, fg / (aa * gl)), mul(b, -hg / (bb * gl)))
-    g3 = add(mul(b, hg / (bb * gl)), mul(a, -fg / (aa * gl)), mul(b, -gl / bb))
-    return [g1, g2, g3, g4]
-
-
-def bar_factors(r: "Robot", ns) -> dict[str, float]:
-    """|g_i| sum_j |g_j| / m_i per node of one bar."""
-    mags = [norm(v) for v in dihedral_gradient(*(r.nodes[n] for n in ns))]
-    total = sum(mags)
-    out: dict[str, float] = {}
-    for n, m in zip(ns, mags):
-        out[n] = out.get(n, 0.0) + m * total / r.mass[n]
-    return out
-
-
-def perpendicular(p, center, axis):
-    d = sub(p, center)
-    return sub(d, mul(axis, dot(d, axis)))
-
-
 def frame_of(o, x, y):
     """Node frame (o, x, y) as the spec reads it: columns ex, ey, ez."""
     ex = unit(sub(x, o))
@@ -315,41 +250,6 @@ def _subtree(r: Robot, link: str) -> set[str]:
     return out
 
 
-def _fill(needs: dict[int, float], factors: dict[int, dict[str, float]], ceiling: float) -> dict[int, float]:
-    """Progressive filling: every bar's coefficient grows in proportion to its
-    need until a node it loads reaches `ceiling`; then it stops and the others
-    go on. The bars on every node stay within the ceiling (max-min fair in
-    need-normalised terms)."""
-    active = set(needs)
-    q = {b: 0.0 for b in needs}
-    frozen_load: dict[str, float] = {}
-    t = 0.0
-    while active:
-        rates: dict[str, float] = {}
-        for b in active:
-            for n, f in factors[b].items():
-                rates[n] = rates.get(n, 0.0) + f * needs[b]
-        best = None
-        for n, rate in sorted(rates.items()):
-            if rate <= 0:
-                continue
-            tn = (ceiling - frozen_load.get(n, 0.0)) / rate
-            if best is None or tn < best[0] - 1e-15:
-                best = (tn, n)
-        t = best[0]
-        saturated = {b for b in active if best[1] in factors[b]}
-        # Freeze every bar on the saturated node (and any other node saturated at t).
-        for n, rate in rates.items():
-            if abs((ceiling - frozen_load.get(n, 0.0)) / rate - t) <= 1e-12 * max(1.0, t):
-                saturated |= {b for b in active if n in factors[b]}
-        for b in sorted(saturated):
-            q[b] = needs[b] * t
-            for n, f in factors[b].items():
-                frozen_load[n] = frozen_load.get(n, 0.0) + f * q[b]
-        active -= saturated
-    return q
-
-
 def build(stand: bool = STAND) -> Robot:
     r = geometry(stand)
     members: dict[str, list[str]] = {}
@@ -379,62 +279,34 @@ def build(stand: bool = STAND) -> Robot:
         for p in ("pv_c", "pv_f", "pv_b", "pv_l", "pv_r"):
             for s in ("st_tl", "st_tr", "st_tb", "st_ml", "st_mr", "st_mb"):
                 pairs.add(tuple(sorted((p, s))))
-    degree = {n: 0 for n in r.nodes}
-    for a, b in pairs:
-        degree[a] += 1
-        degree[b] += 1
-    for a, b in sorted(pairs):
-        share = min(BEAM_CEILING * r.mass[n] / degree[n] for n in (a, b))   # 2 h^2 k + 4 h c
-        k = min(BEAM_SPRING_MAX, BEAM_SPRING_SHARE * share / (2 * H * H))
-        c = (share - 2 * H * H * k) / (4 * H)
-        r.beams[(a, b)] = (sig_floor(k), sig_floor(c))
+    r.beams.update(size_beams(pairs, r.mass, BEAM_CEILING, BEAM_SPRING_SHARE, BEAM_SPRING_MAX))
     # Per joint: the inertia it moves, its worst-case gravity torque, and the
     # torsion coefficient (h^2 K + 2 h C) that would hold that torque within
     # SAG_TARGET at damping ratio ZETA: its need.
-    bars, needs, factors = [], {}, {}
+    asks = []
     for j in r.joints:
         sub_links = _subtree(r, j["child"])
         sub_nodes = [n for n in r.nodes if r.link[n] in sub_links]
-        inertia = sum(r.mass[n] * dot(perpendicular(r.nodes[n], j["center"], j["axis"]),
-                                      perpendicular(r.nodes[n], j["center"], j["axis"])) for n in sub_nodes)
+        inertia = inertia_about(r.nodes, r.mass, sub_nodes, j["center"], j["axis"])
         m_sub = sum(r.mass[n] for n in sub_nodes)
         # Worst-case gravity torque, bounded by the moved mass at its radius of
         # gyration (the limb held out level). Yaw joints of an upright body
         # carry none, but are sized the same way, for leaning poses.
-        torque = m_sub * GRAVITY * math.sqrt(inertia / m_sub)
-        k_need = max(K_FLOOR, torque / SAG_TARGET)
-        need = H * H * k_need + 4 * H * ZETA * math.sqrt(k_need * inertia)
+        torque = gravity_torque_bound(m_sub, inertia)
         j.update(inertia=inertia, moved_mass=m_sub, gravity_torque=torque)
-        for pl, cl in j["bars"]:
-            b = len(bars)
-            ns = [pl, j["neg"], j["pos"], cl]
-            bars.append((j, ns))
-            needs[b] = need / len(j["bars"])
-            factors[b] = bar_factors(r, ns)
-    q = _fill(needs, factors, TORSION_CEILING)
-    for j in r.joints:
-        ids = [b for b, (jj, _) in enumerate(bars) if jj is j]
-        q_total = sum(q[b] for b in ids)
-        inertia = j["inertia"]
-        # h^2 K + 2 h C = Q with C = 2 zeta sqrt(K I): solve for sqrt(K).
-        bq = 4 * H * ZETA * math.sqrt(inertia)
-        u = (-bq + math.sqrt(bq * bq + 4 * H * H * q_total)) / (2 * H * H)
-        alpha = H * H * u * u / q_total
+        asks.append({"bars": [[pl, j["neg"], j["pos"], cl] for pl, cl in j["bars"]], "inertia": inertia,
+                     "need": joint_need(inertia, torque, SAG_TARGET, ZETA, K_FLOOR)})
+    sized = size_torsion(r.nodes, r.mass, asks, TORSION_CEILING, ZETA)
+    for j, ask, s in zip(r.joints, asks, sized):
         lo, hi = j["row"]["lower"], j["row"]["upper"]
-        spring_total = damp_total = 0.0
-        for b in ids:
-            k = sig_floor(alpha * q[b] / (H * H))
-            c = sig_floor((1 - alpha) * q[b] / (2 * H))
-            spring_total += k
-            damp_total += c
-            r.hydros.append({"nodes": bars[b][1], "joint": j["name"], "spring": k, "damp": c, "lo": lo, "hi": hi,
+        for ns, (k, c) in zip(ask["bars"], s["bars"]):
+            r.hydros.append({"nodes": ns, "joint": j["name"], "spring": k, "damp": c, "lo": lo, "hi": hi,
                              "rate": j["row"]["rate"]})
-        omega = math.sqrt(spring_total / inertia)
         r.joint_dynamics[j["name"]] = {
-            "bars": len(ids), "ring_r": j["ring_r"], "inertia": inertia, "moved_mass": j["moved_mass"],
-            "spring": spring_total, "damp": damp_total, "omega": omega,
-            "zeta": damp_total / (2 * math.sqrt(spring_total * inertia)),
-            "gravity_torque_max": j["gravity_torque"], "gravity_sag_max": j["gravity_torque"] / spring_total}
+            "bars": len(ask["bars"]), "ring_r": j["ring_r"], "inertia": j["inertia"], "moved_mass": j["moved_mass"],
+            "spring": s["spring"], "damp": s["damp"],
+            **joint_dynamics(s["spring"], s["damp"], j["inertia"], j["gravity_torque"]),
+            "gravity_torque_max": j["gravity_torque"]}
         pl, cl = j["bars"][0]
         r.spec_joints.append({"name": j["name"], "axis": [j["neg"], j["pos"]], "parent_ref": pl, "child_ref": cl,
                               "sign": 1.0, "lower": lo, "upper": hi, "reference": 0.0})
@@ -444,15 +316,7 @@ def build(stand: bool = STAND) -> Robot:
 def node_loads(r: Robot) -> dict[str, dict[str, float]]:
     """Per node: the beams' and the torsion bars' share of the fixed-step
     criterion omega^2 h^2 + 2 c h / m <= 4, as asked (before any game scaling)."""
-    beams = {n: 0.0 for n in r.nodes}
-    for (a, b), (k, c) in r.beams.items():
-        for n in (a, b):
-            beams[n] += (2 * H * H * k + 4 * H * c) / r.mass[n]
-    torsion = {n: 0.0 for n in r.nodes}
-    for h in r.hydros:
-        for n, f in bar_factors(r, h["nodes"]).items():
-            torsion[n] += (H * H * h["spring"] + 2 * H * h["damp"]) * f
-    return {n: {"beams": beams[n], "torsion": torsion[n]} for n in r.nodes}
+    return _node_loads(r.nodes, r.mass, r.beams, ((h["nodes"], h["spring"], h["damp"]) for h in r.hydros))
 
 
 def robot_mass(r: Robot) -> float:
