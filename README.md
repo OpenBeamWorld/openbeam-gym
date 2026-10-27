@@ -42,7 +42,10 @@ The default robot is the test arm in `assets/openbeam_test_arm.zip`, a JBeam
 vehicle mod that the game's `install_mod` takes as it is: no classic `.truck`
 format is needed. Any vehicle mod with an `openbeam_robot.json`
 (`openbeam-robot/1`) works the same way: set `SceneConfig(robot_file=...,
-install_url=..., install_sha256=...)`.
+install_url=..., install_sha256=...)`. Each bundled robot also carries simple
+generated visual meshes (a COLLADA file and flat-colour materials, one mesh
+per link bound to that link's nodes as a JBeam flexbody), so it shows up on
+the game's video stream; `openbeam_gym/robots/visuals.py` writes them.
 
 For top-down teleoperation, `assets/openbeam_camera_boom.zip` is an overhead
 camera boom that stands beside a tabletop arm and looks straight down at its

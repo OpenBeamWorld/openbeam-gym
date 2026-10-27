@@ -28,20 +28,20 @@ PHYSICS_DT = 0.0005
 # openbeam_gym/robots/build_test_arm.py). install_mod takes it as it is.
 TEST_ARM_FILE = "openbeam_test_arm.jbeam"
 TEST_ARM_URL = "https://raw.githubusercontent.com/OpenBeamWorld/openbeam-gym/main/assets/openbeam_test_arm.zip"
-TEST_ARM_SHA256 = "1464f6b06318edb3c3abfc4385fa1690fbffe582c143729d67cc314d12e892a9"
+TEST_ARM_SHA256 = "cdd066170ef464946902f58ae24624046e85f503d3710b48dadffa91ca8bf1f6"
 
 # The overhead camera boom for top-down teleoperation (assets/openbeam_camera_boom.zip,
 # built by openbeam_gym/robots/build_camera_boom.py), installed the same way.
 CAMERA_BOOM_FILE = "openbeam_camera_boom.jbeam"
 CAMERA_BOOM_URL = "https://raw.githubusercontent.com/OpenBeamWorld/openbeam-gym/main/assets/openbeam_camera_boom.zip"
-CAMERA_BOOM_SHA256 = "d2d8e3a5111a9770b004977ab51eab4bebd6abeda2af53537e8e983792aa1665"
+CAMERA_BOOM_SHA256 = "35aaee10330621f48ab65857a53bc616fe69b3ebd21e1209a5dc1e7cace2908c"
 
 # A G1-class humanoid (25 joints, fixed base on a pedestal), a JBeam vehicle mod
 # published in this repository (assets/openbeam_humanoid_g1.zip, built by
 # openbeam_gym/robots/build_humanoid.py). See humanoid_g1_scene().
 HUMANOID_G1_FILE = "openbeam_humanoid_g1.jbeam"
 HUMANOID_G1_URL = "https://raw.githubusercontent.com/OpenBeamWorld/openbeam-gym/main/assets/openbeam_humanoid_g1.zip"
-HUMANOID_G1_SHA256 = "c70fbb353c0cfb6c6a80356e3d301f59bc1cb93cd58a3017276a1823c51edb74"
+HUMANOID_G1_SHA256 = "7f221c480c390de0329f60b491db93051453bafe6f8c0f6aa2e6cbf74c848ae7"
 
 
 def quat_xyzw_to_matrix(q) -> np.ndarray:

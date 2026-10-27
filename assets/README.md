@@ -1,5 +1,12 @@
 # assets
 
+All three robots are JBeam vehicle mods built by deterministic, stdlib-only
+generators in `openbeam_gym/robots/`. Besides the physics (nodes, beams,
+torsion hydros) each package has visual meshes: `<name>.dae` (COLLADA, Z up,
+metres, in the JBeam vehicle frame), `<name>.materials.json` (flat
+`baseColorFactor` colours) and a JBeam `flexbodies` row per link
+(`[mesh, [node group]]`), so each link's mesh follows that link's nodes.
+
 `openbeam_test_arm.zip`: the fast test robot, a four-joint arm (`base_pan`,
 `shoulder`, `elbow`, `wrist_roll`, with a `tcp` tool node) packaged as a JBeam
 vehicle mod (`vehicles/openbeam_test_arm/`). The game's `install_mod` takes it
@@ -18,6 +25,13 @@ with `install_mod {"url": <raw URL of this file>, "sha256": <its SHA-256>}`
   that also make it a seat for the player, which stepped physics needs.
 - It is a soft body: expect a few centimetres of sag under gravity, which
   `robot_fk` reports as `simulated` error.
+- Visuals: `openbeam_test_arm.dae` and `openbeam_test_arm.materials.json`
+  hold one flat-coloured mesh per link (dark grey links, orange joint
+  housings, a grey base), bound to the link's node group by the JBeam
+  `flexbodies` rows. Adding them changed the zip's SHA-256 but **only the
+  visuals changed**: the JBeam without `flexbodies`, and every other member,
+  are byte for byte the earlier physics-only package (tested in
+  `tests/test_visuals.py`), so the Reach results stay comparable.
 - It predates the fixed-step sizing of the other robots and asks for more
   than the game's per-node budgets (worst torsion share 14.1 against 0.8,
   beams 5.0 against 2.6), so the game scales its torsion bars (to 5.7 % at
@@ -27,7 +41,7 @@ with `install_mod {"url": <raw URL of this file>, "sha256": <its SHA-256>}`
 Rebuild it (deterministic, stdlib only):
 
 ```sh
-python -m openbeam_gym.robots.build_test_arm --out assets/openbeam_test_arm.zip
+python -m openbeam_gym.robots.build_test_arm --out assets/openbeam_test_arm.zip [--report]
 ```
 
 and update `TEST_ARM_SHA256` in `openbeam_gym/env.py` when it changes.
@@ -57,6 +71,9 @@ publishes the robot block and `boom_<joint>_pos|vel|target`.
   sprung node; the one `driver` row is the player's seat on the pinned base.
 - `openbeam_gym.topdown` maps image pixels to the table and back, and image
   drags to table moves.
+- Visuals: one mesh per link bound to its node group (grey stand, dark boom
+  tubes, orange joint housings, a black camera body with its lens on the
+  optical axis at `cam`).
 - Sizing: beams and torsion bars are sized within the game's 0.5 ms
   fixed-step budgets (`openbeam_gym/robots/sizing.py`, shared with the
   humanoid), so the game scales nothing at spawn (worst torsion share 0.68 of
@@ -102,6 +119,10 @@ the neutral standing pose as the reset home.
 - The vehicle Lua publishes `robot_dof`, `robot_q<i>`, `robot_qd<i>`,
   `robot_cmd<i>` and `g1_<joint>_pos|vel|target`, and binds 3 (home pose),
   4 (zero pose) and A/D (waist yaw).
+- Visuals: one mesh per link bound to its node group: a light shell torso,
+  head (with a dark visor), thighs, shins and arms, dark small links, hands
+  and feet, an orange housing on every joint and a grey pedestal (about 1900
+  triangles).
 - Size and sizing: 185 nodes (175 body, 10 pedestal), 1022 beams, 50 torsion
   hydros. Beams and bars are sized within the game's 0.5 ms fixed-step
   budgets, so the game scales nothing at spawn; `--report` prints each joint's

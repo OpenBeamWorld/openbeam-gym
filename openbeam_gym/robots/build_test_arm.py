@@ -19,6 +19,10 @@ The arm is a vehicle package (``vehicles/openbeam_test_arm/``) that the game's
 * Keys (seated in the arm) move the goals: A/D base pan, W/S shoulder, Q/E
   elbow, Z/X wrist roll, 3 home. The key bindings also make the arm a seat
   for the player, which stepped physics needs.
+* Visuals (``visuals()``, written by ``visuals.py``): one flat-coloured mesh
+  per link in ``openbeam_test_arm.dae`` with ``openbeam_test_arm.materials.json``,
+  bound to the link's node group by a JBeam ``flexbodies`` row. They add no
+  mass or beams: the physics is the same as before they were added.
 * The vehicle Lua keeps the arm awake and publishes the generic robot block
   (``robot_dof``, ``robot_q<i>``, ``robot_qd<i>``, ``robot_cmd<i>``) and
   ``arm_<joint>_pos|vel|target`` at 60 Hz, following the SO-101 contract's
@@ -44,6 +48,8 @@ import json
 import math
 import zipfile
 from pathlib import Path
+
+from .visuals import Mesh, flexbodies, package_members
 
 NAME = "openbeam_test_arm"
 NODE_MASS = 3.0          # kg, every node (the previous arm's minimass)
@@ -168,10 +174,35 @@ def build() -> Arm:
     return arm
 
 
+LINKS = ("root", "turret", "upper_arm", "forearm", "hand")
+
+
+def visuals(arm: Arm | None = None) -> list:
+    """One flat-coloured mesh per link, bound to the link's node group
+    (``visuals.py``); each joint's orange housing rides on its parent link."""
+    meshes = {link: Mesh(f"{NAME}_{link}", f"arm_{link}") for link in LINKS}
+    z, y, x = (0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)
+    root, turret, upper, fore, hand = (meshes[k] for k in LINKS)
+    root.box((0.0, 0.0, 0.02), (x, y, z), (0.25, 0.25, 0.02), "stand")
+    root.prism((0.0, 0.0, 0.04), (0.0, 0.0, 0.17), 0.06, "stand")
+    root.housing((0.0, 0.0, 0.18), z, 0.04, 0.11)
+    turret.prism((0.0, 0.0, 0.20), (0.0, 0.0, 0.25), 0.12, "link")
+    turret.bar((0.0, 0.0, 0.25), (0.0, 0.0, 0.42), 0.09, 0.09, "link", hint=x)
+    turret.housing((0.0, 0.0, 0.45), y, 0.16, 0.07)
+    upper.bar((0.0, 0.0, 0.45), (0.5, 0.0, 0.45), 0.08, 0.07, "link", hint=z)
+    upper.housing((0.5, 0.0, 0.45), y, 0.13, 0.06)
+    fore.bar((0.5, 0.0, 0.45), (0.77, 0.0, 0.45), 0.06, 0.06, "link", hint=z)
+    fore.housing((0.765, 0.0, 0.45), x, 0.05, 0.05)
+    hand.prism((0.79, 0.0, 0.45), (0.86, 0.0, 0.45), 0.045, "link")
+    hand.bar((0.86, 0.0, 0.45), (0.98, 0.0, 0.45), 0.05, 0.03, "link", hint=z)
+    hand.box((0.99, 0.0, 0.45), (x, y, z), (0.01, 0.015, 0.015), "housing")
+    return [meshes[k] for k in LINKS]
+
+
 def jbeam_text(arm: Arm) -> str:
     nodes = [["id", "posX", "posY", "posZ"], {"nodeWeight": NODE_MASS}, {"collision": False},
              {"selfCollision": False}, {"frictionCoef": 0.5}]
-    for link in ("root", "turret", "upper_arm", "forearm", "hand"):
+    for link in LINKS:
         nodes.append({"group": f"arm_{link}"})
         for n, l in arm.link.items():
             if l != link:
@@ -201,6 +232,7 @@ def jbeam_text(arm: Arm) -> str:
         "nodes": nodes,
         "beams": beams,
         "torsionHydros": hydros,
+        "flexbodies": flexbodies(visuals(arm)),
     }
     return json.dumps({NAME: part}, indent=1) + "\n"
 
@@ -357,6 +389,7 @@ def members(arm: Arm | None = None) -> dict[str, bytes]:
         f"{prefix}/lua/{NAME}.lua": lua_text(arm).encode(),
         f"{prefix}/info.json": info_json().encode(),
         **input_files(),
+        **package_members(prefix, NAME, visuals(arm)),
         f"{prefix}/LICENSE.txt": b"Copyright 2026 OpenBeam, LLC. Licensed under the Apache License, Version 2.0.\n",
     }
 

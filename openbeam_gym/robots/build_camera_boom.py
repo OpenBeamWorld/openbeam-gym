@@ -75,6 +75,10 @@ The camera:
   a ``driver`` eye at the base like the test arm's, sprung only to pinned base
   nodes (tested), so it cannot load the boom.
 
+Visuals (``visuals()``, written by ``visuals.py``): one flat-coloured mesh per
+link bound to its node group (grey stand, dark tubes, orange joint housings,
+a black camera body whose lens ends at the optical centre ``cam``).
+
 Keys (seated in the boom): A/D base pan, W/S lift, E/Q elbow, X/Z tilt, 3 home.
 While the nadir lock is on (after spawn or home) W/S/E/Q also move the tilt
 goal so the camera keeps its pitch; X/Z turn the lock off and 3 turns it on.
@@ -92,6 +96,7 @@ import math
 from pathlib import Path
 
 from openbeam_gym.robots.build_test_arm import Arm, basis, to_jbeam, write_zip
+from openbeam_gym.robots.visuals import Mesh, flexbodies, package_members
 from openbeam_gym.robots.sizing import (GRAVITY, add, cross, dot, gravity_torque_bound, inertia_about, joint_need,
                                         mul, size_beams, size_torsion)
 from openbeam_gym.robots.sizing import dynamics as joint_dynamics
@@ -383,6 +388,33 @@ def driver_eye_anchors(arm: Arm, k: int = 8) -> list[str]:
 
 # --- package ------------------------------------------------------------------------------------------
 
+def visuals(boom: Boom | None = None) -> list:
+    """One flat-coloured mesh per link, bound to the link's node group
+    (``visuals.py``): the grey stand, dark boom tubes, an orange housing per
+    joint (on its parent link) and a black camera with its lens pointing
+    along the optical axis on the head."""
+    meshes = {link: Mesh(f"{NAME}_{link}", f"boom_{link}") for link in LINKS}
+    x, y, z = (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)
+    root, turret, upper, fore, head = (meshes[k] for k in LINKS)
+    lift, tilt = (0.0, 0.0, MAST_Z), TILT_AT
+    root.box((0.0, 0.0, 0.015), (x, y, z), (0.2, 0.2, 0.015), "stand")
+    root.prism((0.0, 0.0, 0.03), (0.0, 0.0, 0.79), 0.05, "stand")
+    root.housing((0.0, 0.0, 0.80), z, 0.04, 0.10)
+    turret.prism((0.0, 0.0, 0.85), (0.0, 0.0, 0.91), 0.12, "link")
+    turret.prism((0.0, 0.0, 0.91), (0.0, 0.0, MAST_Z - 0.06), 0.05, "link")
+    turret.housing(lift, y, 0.16, 0.075)
+    upper.bar(lift, ELBOW_AT, 0.06, 0.06, "link", hint=y)
+    upper.housing(ELBOW_AT, y, 0.12, 0.06)
+    fore.bar(ELBOW_AT, tilt, 0.05, 0.05, "link", hint=y)
+    fore.housing(tilt, y, 0.10, 0.05)
+    # The head: a hanger from the tilt axis down to the camera body, the body
+    # just above the optical centre and the lens down to it.
+    head.bar(tilt, (CAM[0], 0.0, CAM[2] + 0.08), 0.03, 0.04, "link", hint=y)
+    head.box((CAM[0], 0.0, CAM[2] + 0.045), (x, y, z), (0.06, 0.05, 0.035), "camera")
+    head.prism((CAM[0], 0.0, CAM[2] + 0.01), CAM, 0.025, "lens")
+    return [meshes[k] for k in LINKS]
+
+
 def jbeam_text(arm: Boom) -> str:
     nodes = [["id", "posX", "posY", "posZ"], {"collision": False}, {"selfCollision": False},
              {"frictionCoef": 0.5}]
@@ -427,6 +459,7 @@ def jbeam_text(arm: Boom) -> str:
         "nodes": nodes,
         "beams": beams,
         "torsionHydros": hydros,
+        "flexbodies": flexbodies(visuals(arm)),
     }
     return json.dumps({NAME: part}, indent=1) + "\n"
 
@@ -622,6 +655,7 @@ def members(arm: Boom | None = None) -> dict[str, bytes]:
         f"{prefix}/lua/{NAME}.lua": lua_text(arm).encode(),
         f"{prefix}/info.json": info_json().encode(),
         **input_files(),
+        **package_members(prefix, NAME, visuals(arm)),
         f"{prefix}/LICENSE.txt": b"Copyright 2026 OpenBeam, LLC. Licensed under the Apache License, Version 2.0.\n",
     }
 

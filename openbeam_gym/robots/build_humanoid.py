@@ -8,7 +8,8 @@ G1-class means the publicly described proportions and joint layout of that
 robot class, not its design files: about 1.3 m tall, about 35 kg, six joints
 per leg (hip pitch, roll, yaw, knee, ankle pitch, roll), a waist (yaw, plus
 roll and pitch here), five per arm (shoulder pitch, roll, yaw, elbow, wrist
-roll): 25 joints. The geometry is this file's own: node clusters, no meshes.
+roll): 25 joints. The geometry is this file's own: node clusters, and simple
+generated visual meshes per link (``visuals.py``).
 The joint table (names, axes, limits, rates, home pose) is in
 ``humanoid_g1.py``.
 
@@ -78,9 +79,10 @@ from pathlib import Path
 
 from . import humanoid_g1
 from .build_test_arm import write_zip
-from .sizing import (add, cross, dot, gravity_torque_bound, inertia_about, joint_need, mul, size_beams,
+from .sizing import (add, cross, dot, gravity_torque_bound, inertia_about, joint_need, mul, norm, size_beams,
                      size_torsion, sub, unit)
 from .sizing import dihedral_gradient  # noqa: F401  (re-exported: the bars' angle gradient)
+from .visuals import Mesh, flexbodies, package_members
 from .sizing import dynamics as joint_dynamics
 from .sizing import node_loads as _node_loads
 
@@ -324,6 +326,61 @@ def robot_mass(r: Robot) -> float:
     return sum(m for n, m in r.mass.items() if r.link[n] != "stand") - r.ballast
 
 
+# -- visuals ------------------------------------------------------------------------
+
+def visuals(r: Robot | None = None) -> list:
+    """One flat-coloured mesh per link, bound to the link's node group
+    (``visuals.py``): light shell limbs, torso and head, dark small links and
+    feet, an orange housing per joint (on its parent link), a dark visor and
+    a grey pedestal."""
+    r = r or build()
+    order = (["stand"] if r.stand else []) + ["pelvis"] + [j["child"] for j in r.joints]
+    meshes = {link: Mesh(f"{NAME}_{link}", f"g1_{link}") for link in order}
+    c = {j["name"]: j["center"] for j in r.joints}
+    lift = FOOT_CLEARANCE
+
+    def at(x, y, z):
+        return (x, y, z + lift)
+
+    xa, ya, za = X, Y, Z
+    meshes["pelvis"].box(at(0.0, 0.0, 0.77), (xa, ya, za), (0.07, 0.11, 0.05), "shell")
+    for side, s in (("left", 1.0), ("right", -1.0)):
+        m = {k: meshes[f"{side}_{k}"] for k in ("hip_pitch_link", "hip_roll_link", "thigh", "shin", "ankle_link",
+                                                "foot", "shoulder_pitch_link", "shoulder_roll_link", "upper_arm",
+                                                "forearm", "hand")}
+        q = side + "_"
+        m["hip_pitch_link"].bar(c[q + "hip_pitch"], c[q + "hip_roll"], 0.06, 0.06, "link", hint=xa)
+        m["hip_roll_link"].bar(c[q + "hip_roll"], c[q + "hip_yaw"], 0.07, 0.07, "link", hint=xa)
+        m["thigh"].prism(c[q + "hip_yaw"], c[q + "knee"], 0.055, "shell", cap=0.02)
+        m["shin"].prism(c[q + "knee"], c[q + "ankle_pitch"], 0.045, "shell", cap=0.015)
+        m["ankle_link"].bar(c[q + "ankle_pitch"], c[q + "ankle_roll"], 0.04, 0.04, "link", hint=xa)
+        m["foot"].box(at(0.05, s * 0.10, 0.02), (xa, ya, za), (0.10, 0.04, 0.02), "link")
+        m["shoulder_pitch_link"].bar(c[q + "shoulder_pitch"], c[q + "shoulder_roll"], 0.05, 0.05, "link", hint=xa)
+        m["shoulder_roll_link"].bar(c[q + "shoulder_roll"], c[q + "shoulder_yaw"], 0.05, 0.05, "link", hint=xa)
+        m["upper_arm"].prism(c[q + "shoulder_yaw"], c[q + "elbow"], 0.035, "shell", cap=0.01)
+        m["forearm"].prism(c[q + "elbow"], c[q + "wrist_roll"], 0.03, "shell", cap=0.01)
+        m["hand"].bar(c[q + "wrist_roll"], at(0.0, s * 0.18, 0.59), 0.05, 0.025, "link", hint=xa)
+    meshes["waist_yaw_link"].bar(c["waist_yaw"], c["waist_roll"], 0.10, 0.08, "link", hint=xa)
+    meshes["waist_roll_link"].bar(c["waist_roll"], c["waist_pitch"], 0.10, 0.08, "link", hint=xa)
+    torso = meshes["torso"]
+    torso.box(at(0.005, 0.0, 1.06), (xa, ya, za), (0.075, 0.115, 0.07), "shell")
+    torso.prism(at(0.0, 0.0, 1.13), at(0.0, 0.0, 1.18), 0.03, "link")
+    torso.prism(at(0.0, 0.0, 1.20), at(0.0, 0.0, 1.27), 0.07, "shell", cap=0.03)
+    torso.box(at(0.062, 0.0, 1.24), (xa, ya, za), (0.012, 0.05, 0.018), "lens")
+    for j in r.joints:
+        hw = norm(sub(r.nodes[j["pos"]], r.nodes[j["neg"]])) / 2
+        radius = min(0.05, max(0.025, 0.35 * j["ring_r"]))
+        meshes[j["parent"]].housing(j["center"], j["axis"], min(0.08, 1.6 * hw), radius)
+    if r.stand:
+        st, top = meshes["stand"], 0.76 + FOOT_CLEARANCE
+        g = {n: r.nodes[n] for n in r.nodes if r.link[n] == "stand"}
+        for a, b in (("st_gbl", "st_gbr"), ("st_gbl", "st_gfl"), ("st_gbr", "st_gfr")):
+            st.bar(add(g[a], (0.0, 0.0, 0.02)), add(g[b], (0.0, 0.0, 0.02)), 0.05, 0.04, "stand", hint=za)
+        st.prism((-0.30, 0.0, 0.0), (-0.30, 0.0, top), 0.04, "stand")
+        st.bar((-0.30, 0.0, top), (-0.10, 0.0, top), 0.06, 0.05, "stand", hint=za)
+    return [meshes[k] for k in order]
+
+
 # -- package members --------------------------------------------------------------
 
 def jbeam_text(r: Robot) -> str:
@@ -369,6 +426,7 @@ def jbeam_text(r: Robot) -> str:
         "nodes": nodes,
         "beams": beams,
         "torsionHydros": hydros,
+        "flexbodies": flexbodies(visuals(r)),
     }
     return json.dumps({NAME: part}, indent=1) + "\n"
 
@@ -601,6 +659,7 @@ def members(r: Robot | None = None) -> dict[str, bytes]:
         f"{prefix}/lua/{NAME}.lua": lua_text(r).encode(),
         f"{prefix}/info.json": info_json().encode(),
         **input_files(),
+        **package_members(prefix, NAME, visuals(r)),
         f"{prefix}/LICENSE.txt": b"Copyright 2026 OpenBeam, LLC. Licensed under the Apache License, Version 2.0.\n",
     }
 
