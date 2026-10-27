@@ -44,6 +44,21 @@ format is needed. Any vehicle mod with an `openbeam_robot.json`
 (`openbeam-robot/1`) works the same way: set `SceneConfig(robot_file=...,
 install_url=..., install_sha256=...)`.
 
+For top-down teleoperation, `assets/openbeam_camera_boom.zip` is an overhead
+camera boom that stands beside a tabletop arm and looks straight down at its
+workspace (`openbeam_gym.env.CAMERA_BOOM_URL` / `CAMERA_BOOM_SHA256`, spawn
+`openbeam_camera_boom.jbeam`). Its `openbeam_robot.json` names the camera's
+nodes and field of view; `openbeam_gym.topdown` turns them into a camera pose
+and maps image pixels and drags to points and moves on the table:
+
+```python
+from openbeam_gym import topdown
+cam = topdown.camera_from_spec(spec["camera"], node_positions, width=640)   # height from the aspect
+table = topdown.Plane.horizontal(z=0.0)
+point = topdown.pixel_to_plane(cam, table, (320, 240))       # where the image centre looks
+dx, dy = topdown.drag_to_table_xy(cam, table, (320, 240), (12, -30))   # a drag -> a gripper move
+```
+
 No game at hand? `openbeam_gym.fake.FakeGame` is an in-process stand-in with
 the same tool surface (a rigid kinematic arm), for tests and dry runs:
 
