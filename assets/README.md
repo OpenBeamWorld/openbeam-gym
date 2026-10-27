@@ -18,6 +18,11 @@ with `install_mod {"url": <raw URL of this file>, "sha256": <its SHA-256>}`
   that also make it a seat for the player, which stepped physics needs.
 - It is a soft body: expect a few centimetres of sag under gravity, which
   `robot_fk` reports as `simulated` error.
+- It predates the fixed-step sizing of the other robots and asks for more
+  than the game's per-node budgets (worst torsion share 14.1 against 0.8,
+  beams 5.0 against 2.6), so the game scales its torsion bars (to 5.7 % at
+  worst) and lowers its busiest beams at spawn. It is kept as it is so the
+  Reach results stay comparable; `--report` prints these numbers.
 
 Rebuild it (deterministic, stdlib only):
 
@@ -52,9 +57,16 @@ publishes the robot block and `boom_<joint>_pos|vel|target`.
   sprung node; the one `driver` row is the player's seat on the pinned base.
 - `openbeam_gym.topdown` maps image pixels to the table and back, and image
   drags to table moves.
+- Sizing: beams and torsion bars are sized within the game's 0.5 ms
+  fixed-step budgets (`openbeam_gym/robots/sizing.py`, shared with the
+  humanoid), so the game scales nothing at spawn (worst torsion share 0.68 of
+  the 0.8 limit). The mass sits on the joints' lever rings and axis nodes
+  (about 114 kg moving), the joints are damped at zeta = 0.05 (damping costs
+  4000x stiffness in that budget), and `--report` prints each joint's
+  stiffness, damping and gravity sag (worst case under 2.3 mrad).
 
 ```sh
-python -m openbeam_gym.robots.build_camera_boom --out assets/openbeam_camera_boom.zip
+python -m openbeam_gym.robots.build_camera_boom --out assets/openbeam_camera_boom.zip --report
 ```
 
 and update `CAMERA_BOOM_SHA256` in `openbeam_gym/env.py` when it changes.

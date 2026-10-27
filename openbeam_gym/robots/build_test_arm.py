@@ -372,14 +372,27 @@ def write_zip(path: Path, files: dict[str, bytes]) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def budget(arm: Arm | None = None) -> dict:
+    """The arm against the game's fixed-step budgets (``sizing.py``), as the
+    game reads its JBeam. The arm predates that sizing and asks for more than
+    the budgets: the game scales its torsion bars and lowers its busiest
+    beams at spawn. It is left as it is so its PPO results stay comparable."""
+    from .sizing import budget_report
+
+    return budget_report(json.loads(jbeam_text(arm or build()))[NAME])
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=Path("assets") / f"{NAME}.zip")
+    ap.add_argument("--report", action="store_true", help="print the fixed-step budget report")
     args = ap.parse_args()
     arm = build()
     digest = write_zip(args.out, members(arm))
     print(json.dumps({"zip": str(args.out), "sha256": digest, "nodes": len(arm.nodes), "beams": len(arm.beams),
                       "torsion_hydros": len(arm.hydros)}))
+    if args.report:
+        print(json.dumps({k: v for k, v in budget(arm).items() if k != "loads"}))
 
 
 if __name__ == "__main__":

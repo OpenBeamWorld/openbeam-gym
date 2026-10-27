@@ -26,7 +26,7 @@ z = 0 is the surface the boom and the arm stand on, the table top):
   node ``cam``; ``cam_fwd`` lies 0.1 m along the optical axis (below it) and
   ``cam_up`` 0.1 m along the image's up direction. The three are braced to
   each other, to the tilt lever ring and to the tilt axis like any link
-  cluster, and weigh what every other node does (3 kg).
+  cluster, and weigh 0.5 kg each.
 
 The spawn pose (all joints 0) is the home pose: the camera at (0.55, 0, 1.00)
 looking straight down (nadir), image up = +x (away from the mast). With a 50
@@ -36,24 +36,25 @@ The camera looks straight down whenever lift + elbow + tilt = 0 (all three
 pitch about -y); ``nadir_joints`` solves that pose in closed form, and reaches
 any point within 0.25 m of the workspace centre from 0.8 to 1.2 m high.
 
-Stability (a camera mount must not sway):
+Stability (a camera mount must not sway). The game holds every node to its
+0.5 ms fixed-step budgets and scales down whatever asks for more (``sizing.py``
+has the law). This builder sizes everything within them itself, as the
+humanoid's does, so the game scales nothing at spawn:
 
-* The game caps a torsion bar's stiffness by fixed-step stability, about
-  m r^2 / h^2 for node mass m, lever r and the 0.5 ms step h. So the joints
-  that carry the boom have longer levers than the test arm (base pan and lift
-  20 cm vs 16 cm: 1.56x the cap); the outer joints, which carry little, have
-  shorter ones (elbow 16 cm, tilt 12 cm). Each lever ring is centred on its
-  own axis, so its own mass adds no torque to that joint.
-* ``stability()`` computes the gravity torque on each joint at home and the
-  sag per unit of the cap: every joint's is below the test arm's worst, the
-  lift's about 0.4x the test arm shoulder's (tested).
-* Beams are 1.5x the test arm's (600 kN/m). The root bearing nodes brace only
-  to the mast top, so no node carries more beams than the test arm's busiest.
-  The explicit step stays stable while h * omega_max < 2; the beam network's
-  h * omega_max is about 0.84 (the test arm's 0.75), and its damping term
-  h * c_max / m about 0.6 (tested by eigenvalues in tests/).
-* Joints move at 0.5 rad/s (the test arm: 1) with twice the torsion damping,
-  so the picture glides rather than jerks.
+* The mass sits on the joints' lever rings and axis nodes (``RING_MASS``),
+  because a torsion bar's budget is its nodes' m r^2. Each lever ring is
+  centred on its own axis, so its own mass adds no gravity torque to that
+  joint. The joints that carry the boom have long levers (base pan and lift
+  20 cm), the outer joints shorter ones (elbow 16 cm, tilt 12 cm).
+* Beams take an equal slice of each node's beam budget (at most
+  ``BEAM_CEILING`` per node); torsion bars at most ``TORSION_CEILING`` per
+  node, split between spring and damper for the damping ratio ``ZETA``
+  against the inertia each joint moves.
+* ``analysis()`` and ``--report`` give each joint's stiffness, damping,
+  natural frequency and gravity sag (at home, and worst case: the moved mass
+  held out level at its radius of gyration).
+* Joints move at 0.5 rad/s (the test arm: 1), so the picture glides rather
+  than jerks.
 
 The camera:
 
@@ -78,7 +79,7 @@ Keys (seated in the boom): A/D base pan, W/S lift, E/Q elbow, X/Z tilt, 3 home.
 While the nadir lock is on (after spawn or home) W/S/E/Q also move the tilt
 goal so the camera keeps its pitch; X/Z turn the lock off and 3 turns it on.
 
-    python -m openbeam_gym.robots.build_camera_boom --out assets/openbeam_camera_boom.zip
+    python -m openbeam_gym.robots.build_camera_boom --out assets/openbeam_camera_boom.zip [--report]
 
 Stdlib only; the zip is deterministic (fixed timestamps, sorted members).
 """
@@ -90,17 +91,46 @@ import json
 import math
 from pathlib import Path
 
-from openbeam_gym.robots.build_test_arm import Arm, add, basis, cross, mul, to_jbeam, write_zip
+from openbeam_gym.robots.build_test_arm import Arm, basis, to_jbeam, write_zip
+from openbeam_gym.robots.sizing import (GRAVITY, add, cross, dot, gravity_torque_bound, inertia_about, joint_need,
+                                        mul, size_beams, size_torsion)
+from openbeam_gym.robots.sizing import dynamics as joint_dynamics
+from openbeam_gym.robots.sizing import node_loads as _node_loads
 
 NAME = "openbeam_camera_boom"
-NODE_MASS = 3.0           # kg, every node, as the test arm (the torsion cap scales with it)
-BEAM_SPRING = 600000.0    # N/m, 1.5x the test arm's
-BEAM_DAMP = 250.0         # N s/m
 RATE = 0.5                # rad/s, joint speed
-TORSION_SPRING = 300000.0  # N m/rad, an upper bound: the game sizes each bar at spawn
-TORSION_DAMP = 800.0       # N m s/rad
-PHYSICS_DT = 0.0005       # s, the game's fixed step
-GRAVITY = 9.81
+
+# Mass, kg per node. A torsion bar's fixed-step budget is its nodes' m r^2,
+# so the mass sits on each joint's lever rings and axis nodes, where the
+# motors and bearings of a real boom are: RING_MASS per ring node (parent and
+# child side alike, they load equally), AXIS_SHARE of it per axis node (an
+# axis node carries all four bars but sits nearer the axis). A child ring is
+# centred on its own axis, so its mass costs that joint inertia but no
+# gravity torque; the outer joints' rings are lighter because the lift
+# carries them. The moving mass (about 114 kg) is about the earlier uniform
+# 3 kg-per-node boom's (111 kg), redistributed. Pinned stand nodes weigh
+# STAND_NODE_MASS; the three camera nodes CAMERA_NODE_MASS each (a 1.5 kg camera).
+RING_MASS = {"base_pan": 4.0, "lift": 5.0, "elbow": 3.0, "tilt": 2.0}
+AXIS_SHARE = 0.8
+STAND_NODE_MASS = 3.0
+CAMERA_NODE_MASS = 0.5
+# Fixed-step budgets (see sizing.py): beams at most BEAM_CEILING per node,
+# torsion bars at most TORSION_CEILING (the game scales bars above 0.8 and
+# measures about 0.1 % above this builder, hence the margin below 0.7).
+BEAM_CEILING = 2.0
+BEAM_SPRING_SHARE = 0.6
+BEAM_SPRING_MAX = 2.0e6
+TORSION_CEILING = 0.68
+# Damping ratio of every joint, chosen deliberately low. Per unit, damping
+# costs 4000x stiffness in the budget (2 h C against h^2 K), so at a damping
+# ratio of 0.15 over 95 % of the lift's budget would be damper. In that regime
+# the sway's decay rate C / 2I is set by the budget and hardly depends on
+# zeta, while K grows as 1 / zeta^2: 0.05 keeps the decay rate within about
+# 15 % of its maximum and makes the lift several times stiffer than 0.15
+# would (worst-case sag about 1.4 mrad, under a millimetre at the camera).
+ZETA = 0.05
+SAG_TARGET = 0.01         # rad, the worst-case sag a joint's need is sized for (only splits shared nodes)
+K_FLOOR = 50.0            # N m/rad
 
 MAST_Z = 1.15             # lift axis height
 UPPER = 0.45              # lift -> elbow
@@ -154,28 +184,44 @@ EE_ROTATION = [0.0, 0.0, 1.0,
                1.0, 0.0, 0.0]
 
 
-def build() -> Arm:
-    boom = Arm()
+class Boom(Arm):
+    """The test arm's node/beam/hydro containers plus per-node mass, sized
+    beam and bar coefficients and the per-joint dynamics."""
+
+    def __init__(self):
+        super().__init__()
+        self.mass: dict[str, float] = {}
+        self.beam_coeffs: dict[tuple[str, str], tuple[float, float]] = {}
+        self.joint_dynamics: dict[str, dict] = {}
+
+    def node(self, name, p, link, mass, fixed=False):
+        self.mass[name] = mass
+        return super().node(name, p, link, fixed)
+
+
+def build() -> Boom:
+    boom = Boom()
     # The pinned stand: a 0.4 m base plate and a mast up to the pan bearing.
     for i, (x, y) in enumerate(((0.2, 0.2), (-0.2, 0.2), (-0.2, -0.2), (0.2, -0.2))):
-        boom.node(f"b{i}", (x, y, 0.0), "root", fixed=True)
+        boom.node(f"b{i}", (x, y, 0.0), "root", STAND_NODE_MASS, fixed=True)
     for i, (x, y) in enumerate(((0.08, 0.08), (-0.08, 0.08), (-0.08, -0.08), (0.08, -0.08))):
-        boom.node(f"m{i}", (x, y, 0.55), "root", fixed=True)
-    boom.node("bref", (0.0, 0.0, 0.0), "root", fixed=True)
-    boom.node("bback", (-0.2, 0.0, 0.0), "root", fixed=True)
-    boom.node("bleft", (0.0, 0.2, 0.0), "root", fixed=True)
-    boom.node("bup", (0.0, 0.0, 0.1), "root", fixed=True)
+        boom.node(f"m{i}", (x, y, 0.55), "root", STAND_NODE_MASS, fixed=True)
+    boom.node("bref", (0.0, 0.0, 0.0), "root", STAND_NODE_MASS, fixed=True)
+    boom.node("bback", (-0.2, 0.0, 0.0), "root", STAND_NODE_MASS, fixed=True)
+    boom.node("bleft", (0.0, 0.2, 0.0), "root", STAND_NODE_MASS, fixed=True)
+    boom.node("bup", (0.0, 0.0, 0.1), "root", STAND_NODE_MASS, fixed=True)
     axes = {}
     for name, parent, child, p, axis, (lo, hi), lever, half in JOINTS:
         e1, e2 = basis(axis)
-        pos = boom.node(f"{name}_ap", add(p, mul(axis, half)), parent)
-        neg = boom.node(f"{name}_an", add(p, mul(axis, -half)), parent)
+        ring, hub = RING_MASS[name], round(AXIS_SHARE * RING_MASS[name], 6)
+        pos = boom.node(f"{name}_ap", add(p, mul(axis, half)), parent, hub)
+        neg = boom.node(f"{name}_an", add(p, mul(axis, -half)), parent, hub)
         base, moving = [], []
         for k in range(4):
             ang = k * math.pi / 2
             radial = add(mul(e1, math.cos(ang)), mul(e2, math.sin(ang)))
-            base.append(boom.node(f"{name}_p{k}", add(p, mul(axis, -0.03), mul(radial, lever)), parent))
-            moving.append(boom.node(f"{name}_c{k}", add(p, mul(axis, 0.03), mul(radial, lever)), child))
+            base.append(boom.node(f"{name}_p{k}", add(p, mul(axis, -0.03), mul(radial, lever)), parent, ring))
+            moving.append(boom.node(f"{name}_c{k}", add(p, mul(axis, 0.03), mul(radial, lever)), child, ring))
         axes[child] = (pos, neg)
         lo_r, hi_r = math.radians(lo), math.radians(hi)
         for k in range(4):
@@ -183,16 +229,16 @@ def build() -> Arm:
         boom.spec_joints.append({"name": name, "axis": [neg, pos], "parent_ref": base[0], "child_ref": moving[0],
                                  "sign": 1.0, "lower": round(lo_r, 6), "upper": round(hi_r, 6), "reference": 0.0})
     # The camera head: optical centre, a point along the optical axis, a point toward image up.
-    boom.node("cam", CAM, "head")
-    boom.node("cam_fwd", CAM_FWD, "head")
-    boom.node("cam_up", CAM_UP, "head")
+    boom.node("cam", CAM, "head", CAMERA_NODE_MASS)
+    boom.node("cam_fwd", CAM_FWD, "head", CAMERA_NODE_MASS)
+    boom.node("cam_up", CAM_UP, "head", CAMERA_NODE_MASS)
     by_link = links(boom)
     for members in by_link.values():
         for i, a in enumerate(members):
             for b in members[i + 1:]:
                 pinned = (a in boom.fixed) + (b in boom.fixed)
-                # Root bearing nodes brace to each other and to the mast top only:
-                # fewer beams per node keep the explicit step's margin (see stability()).
+                # Root bearing nodes brace to each other and to the mast top only,
+                # which keeps their beam count (and so each beam's slice) moderate.
                 if pinned == 0 or (pinned == 1 and ({a, b} & MAST_TOP)):
                     boom.beams.add((a, b))
     for child, (pos, neg) in axes.items():
@@ -203,7 +249,55 @@ def build() -> Arm:
                  ("b0", "m0"), ("b1", "m1"), ("b2", "m2"), ("b3", "m3"), ("m0", "m2"), ("m1", "m3"),
                  ("bref", "bback"), ("bref", "bleft"), ("bback", "bleft"), ("bback", "b1"), ("bleft", "b0")):
         boom.beams.add((a, b))
+    size(boom)
     return boom
+
+
+def size(boom: Boom) -> None:
+    """Beams and torsion bars within the fixed-step budgets (``sizing.py``),
+    then the per-joint dynamics."""
+    boom.beam_coeffs = size_beams({tuple(sorted(b)) for b in boom.beams}, boom.mass, BEAM_CEILING,
+                                  BEAM_SPRING_SHARE, BEAM_SPRING_MAX)
+    asks = []
+    for i, (name, _parent, child, p, axis, *_rest) in enumerate(JOINTS):
+        moved = [n for n in boom.nodes if boom.link[n] in LINKS[LINKS.index(child):]]
+        inertia = inertia_about(boom.nodes, boom.mass, moved, p, axis)
+        m_moved = sum(boom.mass[n] for n in moved)
+        torque_max = gravity_torque_bound(m_moved, inertia)
+        bars = [h["nodes"] for h in boom.hydros if h["joint"] == name]
+        asks.append({"name": name, "bars": bars, "inertia": inertia, "moved_mass": m_moved,
+                     "torque_max": torque_max, "torque_home": home_gravity_torque(boom, i),
+                     "need": joint_need(inertia, torque_max, SAG_TARGET, ZETA, K_FLOOR)})
+    sized = size_torsion(boom.nodes, boom.mass, asks, TORSION_CEILING, ZETA)
+    by_bar = {}
+    for ask, s in zip(asks, sized):
+        for ns, kc in zip(ask["bars"], s["bars"]):
+            by_bar[tuple(ns)] = kc
+        boom.joint_dynamics[ask["name"]] = {
+            "lever": LEVERS[ask["name"]], "inertia": ask["inertia"], "moved_mass": ask["moved_mass"],
+            "spring": s["spring"], "damp": s["damp"],
+            **joint_dynamics(s["spring"], s["damp"], ask["inertia"], ask["torque_max"]),
+            "gravity_torque_max": ask["torque_max"], "gravity_torque_home": ask["torque_home"],
+            "gravity_sag_home": abs(ask["torque_home"]) / s["spring"]}
+    for h in boom.hydros:
+        h["spring"], h["damp"] = by_bar[tuple(h["nodes"])]
+
+
+def home_gravity_torque(boom: Boom, i: int) -> float:
+    """Gravity torque (N m, about the joint's +axis) on joint i at the spawn pose."""
+    name, _parent, child, p, axis, *_ = JOINTS[i]
+    carried = set(LINKS[LINKS.index(child):])
+    torque = 0.0
+    for n, link in boom.link.items():
+        if link in carried:
+            torque += dot(cross(add(boom.nodes[n], mul(p, -1.0)), (0.0, 0.0, -GRAVITY * boom.mass[n])), axis)
+    return torque
+
+
+def node_loads(boom: Boom) -> dict[str, dict[str, float]]:
+    """Per node: the beams' and torsion bars' share of the fixed-step criterion."""
+    return _node_loads(boom.nodes, boom.mass, boom.beam_coeffs,
+                       ((h["nodes"], h["spring"], h["damp"]) for h in boom.hydros))
 
 
 def links(arm: Arm) -> dict[str, list[str]]:
@@ -255,31 +349,28 @@ def nadir_joints(x: float, y: float, height: float, elbow_up: bool = True) -> di
     return q
 
 
-# --- stability estimates ------------------------------------------------------------------------------
+# --- sizing report -------------------------------------------------------------------------------------
 
-def stability(arm: Arm, joints, levers: dict[str, float], node_mass: float = NODE_MASS) -> dict:
-    """Static gravity torque on each joint at the spawn pose and the sag per
-    unit of the torsion cap (torque / (4 m r^2 / h^2), radians up to the
-    game's constant).
+def analysis(boom: Boom) -> dict:
+    loads = node_loads(boom)
+    worst_beam = max(loads, key=lambda n: (loads[n]["beams"], n))
+    worst_torsion = max(loads, key=lambda n: (loads[n]["torsion"], n))
+    return {
+        "nodes": len(boom.nodes), "beams": len(boom.beams), "torsion_hydros": len(boom.hydros),
+        "moving_mass_kg": round(sum(m for n, m in boom.mass.items() if boom.link[n] != "root"), 3),
+        "worst_beam_load": [worst_beam, round(loads[worst_beam]["beams"], 4)],
+        "worst_torsion_load": [worst_torsion, round(loads[worst_torsion]["torsion"], 4)],
+        "joints_dynamics": {k: {kk: round(vv, 4) for kk, vv in v.items()} for k, v in boom.joint_dynamics.items()},
+    }
 
-    ``joints`` rows start (name, parent, child, point, axis); the chain is
-    serial, so a joint carries its child link and every later one."""
-    order = [j[2] for j in joints]
-    out = {"joints": {}}
-    for i, row in enumerate(joints):
-        name, _, _, p, axis = row[:5]
-        lever = levers[name]
-        carried = set(order[i:])
-        torque = 0.0
-        for n, link in arm.link.items():
-            if link in carried:
-                r = add(arm.nodes[n], mul(p, -1.0))
-                f = (0.0, 0.0, -GRAVITY * node_mass)
-                torque += sum(a * b for a, b in zip(cross(r, f), axis))
-        cap = 4 * node_mass * lever ** 2 / PHYSICS_DT ** 2
-        out["joints"][name] = {"torque_Nm": abs(torque), "lever_m": lever, "sag_per_cap": abs(torque) / cap}
-    out["moving_nodes"] = sum(1 for n in arm.nodes if n not in arm.fixed)
-    return out
+
+def report_table(boom: Boom) -> str:
+    rows = [f"{'joint':10s} {'lever m':>7s} {'I kgm2':>8s} {'K Nm/rad':>9s} {'C Nms':>7s} {'w rad/s':>8s} "
+            f"{'zeta':>5s} {'sag home':>9s} {'sag max':>8s}"]
+    for name, d in boom.joint_dynamics.items():
+        rows.append(f"{name:10s} {d['lever']:7.2f} {d['inertia']:8.4f} {d['spring']:9.1f} {d['damp']:7.3f} "
+                    f"{d['omega']:8.1f} {d['zeta']:5.2f} {d['gravity_sag_home']:9.5f} {d['gravity_sag_max']:8.5f}")
+    return "\n".join(rows)
 
 
 def driver_eye_anchors(arm: Arm, k: int = 8) -> list[str]:
@@ -292,28 +383,36 @@ def driver_eye_anchors(arm: Arm, k: int = 8) -> list[str]:
 
 # --- package ------------------------------------------------------------------------------------------
 
-def jbeam_text(arm: Arm) -> str:
-    nodes = [["id", "posX", "posY", "posZ"], {"nodeWeight": NODE_MASS}, {"collision": False},
-             {"selfCollision": False}, {"frictionCoef": 0.5}]
+def jbeam_text(arm: Boom) -> str:
+    nodes = [["id", "posX", "posY", "posZ"], {"collision": False}, {"selfCollision": False},
+             {"frictionCoef": 0.5}]
+    weight = None
     for link in LINKS:
         nodes.append({"group": f"boom_{link}"})
         for n, l in arm.link.items():
             if l != link:
                 continue
+            if arm.mass[n] != weight:
+                weight = arm.mass[n]
+                nodes.append({"nodeWeight": weight})
             x, y, z = to_jbeam(arm.nodes[n])
             row = [n, x, y, z]
             if n in arm.fixed:
                 row.append({"fixed": True})
             nodes.append(row)
     nodes.append({"group": ""})
-    beams = [["id1:", "id2:"], {"beamSpring": BEAM_SPRING, "beamDamp": BEAM_DAMP},
-             {"beamDeform": 1.0e9, "beamStrength": 1.0e12}]
-    beams += [[a, b] for a, b in sorted(arm.beams)]
+    beams = [["id1:", "id2:"], {"beamDeform": 1.0e9, "beamStrength": 1.0e12}]
+    current = None
+    for (a, b), (k, c) in sorted(arm.beam_coeffs.items(), key=lambda t: (t[1], t[0])):
+        if (k, c) != current:
+            beams.append({"beamSpring": k, "beamDamp": c})
+            current = (k, c)
+        beams.append([a, b])
     hydros = [["id1:", "id2:", "id3:", "id4:"]]
     for h in arm.hydros:
         j = h["joint"]
         hydros.append(h["nodes"] + [{
-            "spring": TORSION_SPRING, "damp": TORSION_DAMP, "inputSource": f"boom_cmd_{j}",
+            "spring": h["spring"], "damp": h["damp"], "inputSource": f"boom_cmd_{j}",
             "inLimit": round(h["lo"], 6), "outLimit": round(h["hi"], 6),
             "inputInLimit": round(h["lo"], 6), "inputCenter": 0, "inputOutLimit": round(h["hi"], 6),
             "inRate": RATE, "outRate": RATE, "autoCenterRate": RATE}])
@@ -514,7 +613,7 @@ def info_json() -> str:
                       indent=2) + "\n"
 
 
-def members(arm: Arm | None = None) -> dict[str, bytes]:
+def members(arm: Boom | None = None) -> dict[str, bytes]:
     arm = arm or build()
     prefix = f"vehicles/{NAME}"
     return {
@@ -530,12 +629,14 @@ def members(arm: Arm | None = None) -> dict[str, bytes]:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", type=Path, default=Path("assets") / f"{NAME}.zip")
+    ap.add_argument("--report", action="store_true", help="print the per-joint stiffness/damping/sag table")
     args = ap.parse_args()
     boom = build()
     digest = write_zip(args.out, members(boom))
-    report = stability(boom, JOINTS, LEVERS)
-    print(json.dumps({"zip": str(args.out), "sha256": digest, "nodes": len(boom.nodes), "beams": len(boom.beams),
-                      "torsion_hydros": len(boom.hydros), "stability": report}))
+    a = analysis(boom)
+    print(json.dumps({"zip": str(args.out), "sha256": digest, **{k: v for k, v in a.items() if k != "joints_dynamics"}}))
+    if args.report:
+        print(report_table(boom))
 
 
 if __name__ == "__main__":

@@ -194,37 +194,34 @@ def test_the_driver_seat_only_touches_the_pinned_stand():
     assert set(B.driver_eye_anchors(boom)) <= boom.fixed
 
 
-def _beam_network_margins(arm, spring, damp, mass=3.0, h=5e-4):
-    free = [n for n in arm.nodes if n not in arm.fixed]
-    idx = {n: i for i, n in enumerate(free)}
-    k = np.zeros((3 * len(free),) * 2)
-    for a, b in arm.beams:
-        d = np.subtract(arm.nodes[b], arm.nodes[a])
-        d = d / np.linalg.norm(d)
-        p = np.outer(d, d)
-        for x in (a, b):
-            if x in idx:
-                i = 3 * idx[x]
-                k[i:i + 3, i:i + 3] += p
-        if a in idx and b in idx:
-            i, j = 3 * idx[a], 3 * idx[b]
-            k[i:i + 3, j:j + 3] -= p
-            k[j:j + 3, i:i + 3] -= p
-    lam = float(np.linalg.eigvalsh(k).max())
-    return h * math.sqrt(spring * lam / mass), h * damp * lam / mass
+def test_beams_and_bars_are_sized_within_the_fixed_step_budgets():
+    boom = B.build()
+    loads = B.node_loads(boom)
+    assert max(v["beams"] for v in loads.values()) <= B.BEAM_CEILING + 1e-9
+    assert max(v["torsion"] for v in loads.values()) <= B.TORSION_CEILING + 1e-9 < 0.7
+    # Every bar node is loaded near the ceiling: the joints get all the budget there is.
+    for h in boom.hydros:
+        assert max(loads[n]["torsion"] for n in h["nodes"]) > 0.95 * B.TORSION_CEILING
+    for name, d in boom.joint_dynamics.items():
+        assert d["zeta"] == pytest.approx(B.ZETA, rel=0.05), name
+        assert d["gravity_sag_max"] < 0.003, name           # rad, worst case
+        assert d["gravity_sag_home"] < 0.0015, name
+        assert d["omega"] > 50, name
+    # The pan axis is vertical on a pinned stand: no gravity torque at home.
+    assert boom.joint_dynamics["base_pan"]["gravity_torque_home"] == pytest.approx(0.0, abs=1e-9)
+    # Stiffer than the earlier over-budget boom was once the game had scaled
+    # it (4 x 300 kN m/rad asked per joint, scaled to 4.6 % / 4.6 % / 2.8 % / 1.3 %).
+    effective_before = {"base_pan": 54857, "lift": 54857, "elbow": 33704, "tilt": 15191}
+    for name, k in effective_before.items():
+        assert boom.joint_dynamics[name]["spring"] > 1.2 * k, name
+    assert B.RATE < T.RATE
 
 
-def test_stability_margins_against_the_test_arm():
-    boom, arm = B.build(), T.build()
-    boom_w, boom_c = _beam_network_margins(boom, B.BEAM_SPRING, B.BEAM_DAMP)
-    arm_w, arm_c = _beam_network_margins(arm, T.BEAM_SPRING, T.BEAM_DAMP)
-    assert B.BEAM_SPRING > T.BEAM_SPRING
-    assert boom_w < 0.9 and boom_c < 0.7                 # explicit step limit is 2
-    assert boom_w < 1.2 * arm_w
-    # Gravity sag per unit of the m r^2 / h^2 torsion cap: below the test arm's worst joint.
-    sb = B.stability(boom, B.JOINTS, B.LEVERS)["joints"]
-    sa = B.stability(arm, T.JOINTS, {j[0]: T.LEVER for j in T.JOINTS})["joints"]
-    worst_arm = max(v["sag_per_cap"] for v in sa.values())
-    assert all(v["sag_per_cap"] < worst_arm for v in sb.values())
-    assert sb["lift"]["sag_per_cap"] < 0.5 * sa["shoulder"]["sag_per_cap"]
-    assert B.LEVERS["lift"] > T.LEVER and B.RATE < T.RATE
+def test_the_report_lists_every_joint(capsys, tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["build_camera_boom", "--out", str(tmp_path / "b.zip"), "--report"])
+    B.main()
+    out = capsys.readouterr().out.splitlines()
+    summary = json.loads(out[0])
+    assert summary["sha256"] == CAMERA_BOOM_SHA256 and summary["worst_torsion_load"][1] <= 0.7
+    for name in ("base_pan", "lift", "elbow", "tilt"):
+        assert any(line.startswith(name) for line in out[2:])

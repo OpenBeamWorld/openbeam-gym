@@ -34,7 +34,7 @@ TEST_ARM_SHA256 = "1464f6b06318edb3c3abfc4385fa1690fbffe582c143729d67cc314d12e89
 # built by openbeam_gym/robots/build_camera_boom.py), installed the same way.
 CAMERA_BOOM_FILE = "openbeam_camera_boom.jbeam"
 CAMERA_BOOM_URL = "https://raw.githubusercontent.com/OpenBeamWorld/openbeam-gym/main/assets/openbeam_camera_boom.zip"
-CAMERA_BOOM_SHA256 = "13cae13e8552844600484df4b49157332e545a60b9db2b7f6e040b0299a67c3b"
+CAMERA_BOOM_SHA256 = "d2d8e3a5111a9770b004977ab51eab4bebd6abeda2af53537e8e983792aa1665"
 
 # A G1-class humanoid (25 joints, fixed base on a pedestal), a JBeam vehicle mod
 # published in this repository (assets/openbeam_humanoid_g1.zip, built by
