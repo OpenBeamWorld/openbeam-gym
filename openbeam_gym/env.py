@@ -27,14 +27,21 @@ PHYSICS_DT = 0.0005
 # this repository (assets/openbeam_test_arm.zip, built by
 # openbeam_gym/robots/build_test_arm.py). install_mod takes it as it is.
 TEST_ARM_FILE = "openbeam_test_arm.jbeam"
-TEST_ARM_URL = "https://raw.githubusercontent.com/OpenBeam-OSS/openbeam-gym/main/assets/openbeam_test_arm.zip"
+TEST_ARM_URL = "https://raw.githubusercontent.com/OpenBeamWorld/openbeam-gym/main/assets/openbeam_test_arm.zip"
 TEST_ARM_SHA256 = "1464f6b06318edb3c3abfc4385fa1690fbffe582c143729d67cc314d12e892a9"
 
 # The overhead camera boom for top-down teleoperation (assets/openbeam_camera_boom.zip,
 # built by openbeam_gym/robots/build_camera_boom.py), installed the same way.
 CAMERA_BOOM_FILE = "openbeam_camera_boom.jbeam"
-CAMERA_BOOM_URL = "https://raw.githubusercontent.com/OpenBeam-OSS/openbeam-gym/main/assets/openbeam_camera_boom.zip"
+CAMERA_BOOM_URL = "https://raw.githubusercontent.com/OpenBeamWorld/openbeam-gym/main/assets/openbeam_camera_boom.zip"
 CAMERA_BOOM_SHA256 = "13cae13e8552844600484df4b49157332e545a60b9db2b7f6e040b0299a67c3b"
+
+# A G1-class humanoid (25 joints, fixed base on a pedestal), a JBeam vehicle mod
+# published in this repository (assets/openbeam_humanoid_g1.zip, built by
+# openbeam_gym/robots/build_humanoid.py). See humanoid_g1_scene().
+HUMANOID_G1_FILE = "openbeam_humanoid_g1.jbeam"
+HUMANOID_G1_URL = "https://raw.githubusercontent.com/OpenBeamWorld/openbeam-gym/main/assets/openbeam_humanoid_g1.zip"
+HUMANOID_G1_SHA256 = "c70fbb353c0cfb6c6a80356e3d301f59bc1cb93cd58a3017276a1823c51edb74"
 
 
 def quat_xyzw_to_matrix(q) -> np.ndarray:
@@ -61,6 +68,19 @@ class SceneConfig:
     home: dict = field(default_factory=dict)   # joint name -> radians for reset; default mid-range
     settle_steps: int = 600                    # physics steps after moving to home (0.3 s)
     end_effector: str | None = None
+
+
+def humanoid_g1_scene(end_effector: str = "left_hand", **overrides) -> SceneConfig:
+    """SceneConfig for the G1-class humanoid: installs it by URL, spawns it and
+    uses its neutral standing pose as the reset home (the default mid-range
+    home would splay the hips). End effectors: left_hand, right_hand,
+    left_foot, right_foot."""
+    from .robots.humanoid_g1 import HOME
+
+    args = dict(robot_file=HUMANOID_G1_FILE, install_url=HUMANOID_G1_URL, install_sha256=HUMANOID_G1_SHA256,
+                home=dict(HOME), end_effector=end_effector)
+    args.update(overrides)
+    return SceneConfig(**args)
 
 
 class OpenBeamRobotEnv(gym.Env):
